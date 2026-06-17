@@ -85,11 +85,14 @@ habilitado en `0001_extensions.sql`).
   para mantener la frontera de paquete clara y poder extraerse sin fricción si hiciera falta.
 - Embeddings: **OpenAI `text-embedding-3-small`**, 1536 dims (`silver.item_embeddings`).
 - UI de configuración v1: **Streamlit**.
+- Reddit: **scraping** de los endpoints JSON públicos (sin OAuth/praw) — elegido sobre la
+  API oficial; `acquisition = [scraping]`.
+- Medios RSS de v1 (para validar el conector `press_rss`): **El País + BBC News**. El
+  conector no los hardcodea: cada medio es una `source_instance` (`feed_url` como param).
 
 ## Decisiones pendientes
 
-- Reddit: vía de adquisición (scraping vs API oficial/`praw`) — validar ToS y rate limits.
-- Qué dos medios de prensa concretos para los conectores RSS de v1.
+Ninguna abierta por ahora.
 
 ## Alcance v1
 
@@ -103,7 +106,13 @@ tendencia avanzados; multi-tenant.
 ## Orden de construcción
 
 1. Scaffolding + `CLAUDE.md` + migraciones + `Item` + contrato de conector — **hecho**.
-2. Conectores Reddit y RSS (definición de "contenido completo" por tipo).
+   Migraciones validadas contra un proyecto Supabase real (config/bronze/silver/gold +
+   pgvector confirmados).
+2. Conectores Reddit y RSS — **hecho**. `core/connectors/reddit.py` (scraping JSON público,
+   post + top 10 comentarios como raw_items separados) y `core/connectors/rss.py`
+   (RSS para descubrir entradas + trafilatura sobre la página del artículo para el cuerpo
+   completo). Probados offline con `httpx.MockTransport`; aún no se han ejecutado contra
+   las fuentes reales (Reddit/El País/BBC) ni conectado a la ingesta.
 3. Ingesta Bronce (aterrizaje de crudo, watermarks, idempotencia).
 4. Pipeline de enriquecimiento Bronce→Plata.
 5. Motor de consulta (pushdown + embeddings + juez Haiku) y librería de consultas.
@@ -121,6 +130,7 @@ repo/
     src/core/
       models/              # Item canónico, RawPayload, modelos de config
       connectors/           # base.py: contrato Connector + registro + capabilities
+                             # reddit.py, rss.py: conectores Reddit y Prensa-RSS
       enrichment/           # pasos pluggables (pendiente)
       query/                # planificador (pendiente)
       storage/              # interfaz + impl Supabase (pendiente)
