@@ -113,7 +113,17 @@ tendencia avanzados; multi-tenant.
    (RSS para descubrir entradas + trafilatura sobre la página del artículo para el cuerpo
    completo). Probados offline con `httpx.MockTransport`; aún no se han ejecutado contra
    las fuentes reales (Reddit/El País/BBC) ni conectado a la ingesta.
-3. Ingesta Bronce (aterrizaje de crudo, watermarks, idempotencia).
+3. Ingesta Bronce — **hecho**. `core/storage/base.py` (interfaz `BronzeStore`) +
+   `core/storage/supabase.py` (impl con psycopg async) + `core/ingestion/bronze.py`
+   (`run_ingestion`: lee watermark → `connector.fetch(query=None, since=watermark)` →
+   inserta en `bronze.raw_items` → avanza watermark al inicio del run). Bronce ingiere
+   siempre el firehose completo de la fuente, sin pushdown de query — eso es del motor de
+   consulta, para fetches puntuales. Nueva tabla `bronze.source_watermarks`
+   (`migrations/0006_bronze_watermarks.sql`, pendiente de aplicar). Probado offline con un
+   `BronzeStore` en memoria: confirma idempotencia (la segunda ejecución no duplica filas).
+   **Sin probar contra Postgres real** — el entorno de esta sesión bloquea los puertos
+   5432/6543 (solo deja salir por 443), igual que bloqueó la Management API hasta que se
+   amplió el allowlist.
 4. Pipeline de enriquecimiento Bronce→Plata.
 5. Motor de consulta (pushdown + embeddings + juez Haiku) y librería de consultas.
 6. Gold: ejecución de feed (curación/ranking por feed y ventana).
@@ -133,8 +143,8 @@ repo/
                              # reddit.py, rss.py: conectores Reddit y Prensa-RSS
       enrichment/           # pasos pluggables (pendiente)
       query/                # planificador (pendiente)
-      storage/              # interfaz + impl Supabase (pendiente)
-      ingestion/             # orquestación bronce→plata (pendiente)
+      storage/              # base.py: interfaz BronzeStore; supabase.py: impl psycopg async
+      ingestion/             # bronze.py: run_ingestion (watermarks, idempotencia)
   app/                     # paquete broza-app (workspace member, depende de core)
     pyproject.toml
     src/app/
