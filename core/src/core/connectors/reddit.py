@@ -20,6 +20,8 @@ from core.models.raw import RawPayload
 
 CONNECTOR_VERSION = "1"
 TOP_COMMENT_LIMIT = 10
+# old.reddit.com tends to be less aggressively blocked than www for unauthenticated .json.
+REDDIT_HOST = "https://old.reddit.com"
 
 
 class RedditParams(BaseModel):
@@ -50,7 +52,9 @@ class RedditConnector(Connector):
         self, query: QueryDefinition | None, since: datetime | None
     ) -> AsyncIterator[RawPayload]:
         user_agent = os.environ.get("REDDIT_USER_AGENT") or DEFAULT_USER_AGENT
-        async with httpx.AsyncClient(headers=browser_headers(user_agent), timeout=30) as client:
+        async with httpx.AsyncClient(
+            headers=browser_headers(user_agent), timeout=30, follow_redirects=True
+        ) as client:
             listing_url, listing_params = self._listing_request(query)
             resp = await client.get(listing_url, params=listing_params)
             resp.raise_for_status()
@@ -73,7 +77,7 @@ class RedditConnector(Connector):
                     yield comment
 
     def _listing_request(self, query: QueryDefinition | None) -> tuple[str, dict[str, Any]]:
-        base = f"https://www.reddit.com/r/{self.params.subreddit}"
+        base = f"{REDDIT_HOST}/r/{self.params.subreddit}"
         if query and query.definition.natural_language:
             return f"{base}/search.json", {
                 "q": query.definition.natural_language,
@@ -86,7 +90,7 @@ class RedditConnector(Connector):
     async def _fetch_top_comments(
         self, client: httpx.AsyncClient, post_data: dict[str, Any]
     ) -> AsyncIterator[RawPayload]:
-        url = f"https://www.reddit.com/r/{self.params.subreddit}/comments/{post_data['id']}.json"
+        url = f"{REDDIT_HOST}/r/{self.params.subreddit}/comments/{post_data['id']}.json"
         resp = await client.get(url, params={"limit": TOP_COMMENT_LIMIT, "sort": "top"})
         resp.raise_for_status()
         _, comments_listing = resp.json()
