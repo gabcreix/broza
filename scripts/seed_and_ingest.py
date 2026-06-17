@@ -144,4 +144,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    # psycopg's async mode needs the selector loop; Windows defaults to the proactor loop.
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
