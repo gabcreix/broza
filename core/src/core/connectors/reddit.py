@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
 
+from playwright.sync_api import Page
 from pydantic import BaseModel, Field
 
 from core.connectors.base import (
@@ -38,6 +40,9 @@ class RedditConnector(Connector):
     the posts, one per post for its comment tree; top-10 comments by score as separate raw
     payloads. Silver later resolves the post/comment hierarchy from Reddit's ``link_id``/
     ``parent_id``.
+
+    The browser work is synchronous and runs in a worker thread (see browser.py for why), so
+    `fetch` collects everything off-thread and then streams the payloads.
     """
 
     type = "reddit"
@@ -55,8 +60,21 @@ class RedditConnector(Connector):
     async def fetch(
         self, query: QueryDefinition | None, since: datetime | None
     ) -> AsyncIterator[RawPayload]:
-        async with browser_page(f"{REDDIT_HOST}/r/{self.params.subreddit}/") as page:
-            listing = await fetch_json(page, *self._listing_request(query))
+        payloads = await asyncio.to_thread(self._scrape, query, since)
+        for external_id, payload in payloads:
+            yield RawPayload(
+                external_id=external_id,
+                fetched_at=datetime.now(timezone.utc),
+                connector_version=CONNECTOR_VERSION,
+                payload=payload,
+            )
+
+    def _scrape(
+        self, query: QueryDefinition | None, since: datetime | None
+    ) -> list[tuple[str, dict[str, Any]]]:
+        out: list[tuple[str, dict[str, Any]]] = []
+        with browser_page(f"{REDDIT_HOST}/r/{self.params.subreddit}/") as page:
+            listing = fetch_json(page, *self._listing_request(query))
 
             for child in listing["data"]["children"]:
                 if child.get("kind") != "t3":
@@ -67,20 +85,10 @@ class RedditConnector(Connector):
                 if since is not None and created <= since:
                     continue
 
-                yield RawPayload(
-                    external_id=submission["name"],
-                    fetched_at=datetime.now(timezone.utc),
-                    connector_version=CONNECTOR_VERSION,
-                    payload=_submission_payload(submission),
-                )
-
-                for comment in await self._top_comments(page, submission["id"]):
-                    yield RawPayload(
-                        external_id=comment["name"],
-                        fetched_at=datetime.now(timezone.utc),
-                        connector_version=CONNECTOR_VERSION,
-                        payload=_comment_payload(comment),
-                    )
+                out.append((submission["name"], _submission_payload(submission)))
+                for comment in self._top_comments(page, submission["id"]):
+                    out.append((comment["name"], _comment_payload(comment)))
+        return out
 
     def _listing_request(self, query: QueryDefinition | None) -> tuple[str, dict[str, Any]]:
         params: dict[str, Any] = {"limit": self.params.limit}
@@ -93,9 +101,9 @@ class RedditConnector(Connector):
             params["t"] = self.params.time_filter
         return f"{REDDIT_HOST}/r/{self.params.subreddit}/{self.params.listing}.json", params
 
-    async def _top_comments(self, page: Any, post_id: str) -> list[dict[str, Any]]:
+    def _top_comments(self, page: Page, post_id: str) -> list[dict[str, Any]]:
         url = f"{REDDIT_HOST}/r/{self.params.subreddit}/comments/{post_id}.json"
-        listings = await fetch_json(page, url, {"limit": 100, "sort": "top"})
+        listings = fetch_json(page, url, {"limit": 100, "sort": "top"})
         if len(listings) < 2:
             return []
         comments = [
