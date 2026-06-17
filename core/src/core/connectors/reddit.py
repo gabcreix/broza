@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
+import asyncpraw
 from pydantic import BaseModel, Field
 
 from core.connectors.base import (
@@ -14,14 +14,12 @@ from core.connectors.base import (
     ConnectorCapabilities,
     register_connector,
 )
-from core.connectors.http import DEFAULT_USER_AGENT, browser_headers
+from core.connectors.http import DEFAULT_USER_AGENT
 from core.models.config import QueryDefinition
 from core.models.raw import RawPayload
 
 CONNECTOR_VERSION = "1"
 TOP_COMMENT_LIMIT = 10
-# old.reddit.com tends to be less aggressively blocked than www for unauthenticated .json.
-REDDIT_HOST = "https://old.reddit.com"
 
 
 class RedditParams(BaseModel):
@@ -32,16 +30,17 @@ class RedditParams(BaseModel):
 
 @register_connector
 class RedditConnector(Connector):
-    """Public JSON endpoints (no OAuth) — scraping was chosen over praw/the official API
-    for v1. Yields one raw payload per post and one per top-10 comment; Silver later
-    resolves the post/comment parent_id from Reddit's own link_id/parent_id fields."""
+    """Official API (OAuth, app-only via AsyncPRAW) — unauthenticated scraping of Reddit's
+    .json endpoints is blocked at the edge regardless of User-Agent/IP, so this is the only
+    viable acquisition path. Yields one raw payload per post and one per top-10 comment;
+    Silver later resolves the post/comment parent_id from Reddit's own link_id/parent_id."""
 
     type = "reddit"
     display_name = "Reddit"
     capabilities = ConnectorCapabilities(
         keyword_search=True, date_filter=False, native_categories=False, pagination=True
     )
-    acquisition = [AcquisitionMethod.SCRAPING]
+    acquisition = [AcquisitionMethod.API]
     param_model = RedditParams
 
     @property
@@ -51,57 +50,71 @@ class RedditConnector(Connector):
     async def fetch(
         self, query: QueryDefinition | None, since: datetime | None
     ) -> AsyncIterator[RawPayload]:
-        user_agent = os.environ.get("REDDIT_USER_AGENT") or DEFAULT_USER_AGENT
-        async with httpx.AsyncClient(
-            headers=browser_headers(user_agent), timeout=30, follow_redirects=True
-        ) as client:
-            listing_url, listing_params = self._listing_request(query)
-            resp = await client.get(listing_url, params=listing_params)
-            resp.raise_for_status()
-            posts = resp.json()["data"]["children"]
+        async with asyncpraw.Reddit(
+            client_id=os.environ["REDDIT_CLIENT_ID"],
+            client_secret=os.environ["REDDIT_CLIENT_SECRET"],
+            user_agent=os.environ.get("REDDIT_USER_AGENT") or DEFAULT_USER_AGENT,
+        ) as reddit:
+            subreddit = await reddit.subreddit(self.params.subreddit)
+            listing = self._listing(subreddit, query)
 
-            for post in posts:
-                post_data = post["data"]
-                created = datetime.fromtimestamp(post_data["created_utc"], tz=timezone.utc)
+            async for submission in listing:
+                created = datetime.fromtimestamp(submission.created_utc, tz=timezone.utc)
                 if since is not None and created <= since:
                     continue
 
                 yield RawPayload(
-                    external_id=post_data["name"],
+                    external_id=submission.fullname,
                     fetched_at=datetime.now(timezone.utc),
                     connector_version=CONNECTOR_VERSION,
-                    payload=post_data,
+                    payload=_submission_payload(submission),
                 )
 
-                async for comment in self._fetch_top_comments(client, post_data):
+                async for comment in self._fetch_top_comments(submission):
                     yield comment
 
-    def _listing_request(self, query: QueryDefinition | None) -> tuple[str, dict[str, Any]]:
-        base = f"{REDDIT_HOST}/r/{self.params.subreddit}"
+    def _listing(self, subreddit: Any, query: QueryDefinition | None) -> Any:
         if query and query.definition.natural_language:
-            return f"{base}/search.json", {
-                "q": query.definition.natural_language,
-                "restrict_sr": 1,
-                "sort": "new",
-                "limit": self.params.limit,
-            }
-        return f"{base}/{self.params.listing}.json", {"limit": self.params.limit}
+            return subreddit.search(
+                query.definition.natural_language, sort="new", limit=self.params.limit
+            )
+        return getattr(subreddit, self.params.listing)(limit=self.params.limit)
 
-    async def _fetch_top_comments(
-        self, client: httpx.AsyncClient, post_data: dict[str, Any]
-    ) -> AsyncIterator[RawPayload]:
-        url = f"{REDDIT_HOST}/r/{self.params.subreddit}/comments/{post_data['id']}.json"
-        resp = await client.get(url, params={"limit": TOP_COMMENT_LIMIT, "sort": "top"})
-        resp.raise_for_status()
-        _, comments_listing = resp.json()
-        comments = [
-            c["data"] for c in comments_listing["data"]["children"] if c["kind"] == "t1"
-        ][:TOP_COMMENT_LIMIT]
-
-        for comment in comments:
+    async def _fetch_top_comments(self, submission: Any) -> AsyncIterator[RawPayload]:
+        await submission.comments.replace_more(limit=0)
+        comments = sorted(submission.comments, key=lambda c: c.score, reverse=True)
+        for comment in comments[:TOP_COMMENT_LIMIT]:
             yield RawPayload(
-                external_id=comment["name"],
+                external_id=comment.fullname,
                 fetched_at=datetime.now(timezone.utc),
                 connector_version=CONNECTOR_VERSION,
-                payload=comment,
+                payload=_comment_payload(comment),
             )
+
+
+def _submission_payload(submission: Any) -> dict[str, Any]:
+    return {
+        "name": submission.fullname,
+        "id": submission.id,
+        "created_utc": submission.created_utc,
+        "title": submission.title,
+        "selftext": submission.selftext,
+        "author": str(submission.author) if submission.author else None,
+        "score": submission.score,
+        "num_comments": submission.num_comments,
+        "permalink": submission.permalink,
+        "url": submission.url,
+    }
+
+
+def _comment_payload(comment: Any) -> dict[str, Any]:
+    return {
+        "name": comment.fullname,
+        "id": comment.id,
+        "body": comment.body,
+        "author": str(comment.author) if comment.author else None,
+        "score": comment.score,
+        "created_utc": comment.created_utc,
+        "link_id": comment.link_id,
+        "parent_id": comment.parent_id,
+    }

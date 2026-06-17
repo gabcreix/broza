@@ -85,8 +85,11 @@ habilitado en `0001_extensions.sql`).
   para mantener la frontera de paquete clara y poder extraerse sin fricción si hiciera falta.
 - Embeddings: **OpenAI `text-embedding-3-small`**, 1536 dims (`silver.item_embeddings`).
 - UI de configuración v1: **Streamlit**.
-- Reddit: **scraping** de los endpoints JSON públicos (sin OAuth/praw) — elegido sobre la
-  API oficial; `acquisition = [scraping]`.
+- Reddit: **API oficial (OAuth app-only, vía AsyncPRAW)** — el scraping no autenticado de
+  los endpoints `.json` resultó bloqueado en el edge (403) de forma categórica,
+  independientemente de User-Agent/IP; `acquisition = [api]`. Necesita
+  `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` (y opcionalmente `REDDIT_USER_AGENT`) en el
+  entorno.
 - Medios RSS de v1 (para validar el conector `press_rss`): **El País + BBC News**. El
   conector no los hardcodea: cada medio es una `source_instance` (`feed_url` como param).
 
@@ -108,11 +111,11 @@ tendencia avanzados; multi-tenant.
 1. Scaffolding + `CLAUDE.md` + migraciones + `Item` + contrato de conector — **hecho**.
    Migraciones validadas contra un proyecto Supabase real (config/bronze/silver/gold +
    pgvector confirmados).
-2. Conectores Reddit y RSS — **hecho**. `core/connectors/reddit.py` (scraping JSON público,
-   post + top 10 comentarios como raw_items separados) y `core/connectors/rss.py`
+2. Conectores Reddit y RSS — **hecho**. `core/connectors/reddit.py` (API oficial vía
+   AsyncPRAW, OAuth app-only; post + top 10 comentarios como raw_items separados — el
+   scraping no autenticado resultó bloqueado en el edge) y `core/connectors/rss.py`
    (RSS para descubrir entradas + trafilatura sobre la página del artículo para el cuerpo
-   completo). Probados offline con `httpx.MockTransport`; aún no se han ejecutado contra
-   las fuentes reales (Reddit/El País/BBC) ni conectado a la ingesta.
+   completo). RSS probado offline con `httpx.MockTransport`.
 3. Ingesta Bronce — **hecho**. `core/storage/base.py` (interfaz `BronzeStore`) +
    `core/storage/supabase.py` (impl con psycopg async) + `core/ingestion/bronze.py`
    (`run_ingestion`: lee watermark → `connector.fetch(query=None, since=watermark)` →
