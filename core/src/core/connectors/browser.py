@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import sys
 from contextlib import contextmanager
 from typing import Any
 
@@ -29,6 +31,24 @@ _HEADLESS = os.environ.get("REDDIT_BROWSER_HEADLESS", "1") not in ("0", "false",
 
 
 @contextmanager
+def _subprocess_capable_loop_policy():
+    """Playwright spawns its driver as a subprocess; on Windows that needs the Proactor loop,
+    but the app sets the Selector policy globally because psycopg's async mode requires it.
+    Swap to Proactor just while Playwright builds its own loop, then restore. The app's main
+    loop is already created and running, so the swap only affects Playwright's new loop.
+    No-op off Windows, where any loop can spawn subprocesses."""
+    if sys.platform != "win32":
+        yield
+        return
+    previous = asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    try:
+        yield
+    finally:
+        asyncio.set_event_loop_policy(previous)
+
+
+@contextmanager
 def browser_page(warmup_url: str, user_agent: str = DEFAULT_USER_AGENT):
     """Yield a Playwright page that has already cleared `warmup_url`'s edge challenge.
 
@@ -36,7 +56,7 @@ def browser_page(warmup_url: str, user_agent: str = DEFAULT_USER_AGENT):
     URL — and read JSON via `fetch_json` so the cf_clearance cookie carries over. Must be
     called from a thread without a running asyncio loop (e.g. via asyncio.to_thread).
     """
-    with sync_playwright() as pw:
+    with _subprocess_capable_loop_policy(), sync_playwright() as pw:
         browser = pw.chromium.launch(headless=_HEADLESS)
         context = browser.new_context(
             user_agent=user_agent, locale="en-US", viewport={"width": 1280, "height": 800}
