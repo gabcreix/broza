@@ -85,12 +85,14 @@ habilitado en `0001_extensions.sql`).
   para mantener la frontera de paquete clara y poder extraerse sin fricción si hiciera falta.
 - Embeddings: **OpenAI `text-embedding-3-small`**, 1536 dims (`silver.item_embeddings`).
 - UI de configuración v1: **Streamlit**.
-- Reddit: **scraping no autenticado** de los endpoints `.json` públicos (mismo enfoque
-  probado en otro proyecto del usuario); `acquisition = [scraping]`. Clave: **User-Agent
-  simple y descriptivo** (`broza/0.1 ...`), no spoofing de navegador — un UA de Chrome sin
-  fingerprint TLS real lo marca el edge de Reddit como bot y devuelve 403. Overridable con
-  `REDDIT_USER_AGENT`. Si el bloqueo se endurece, la salida es la API oficial vía AsyncPRAW
-  (OAuth app-only).
+- Reddit: **scraping de los `.json` públicos a través de un navegador real (Playwright)**;
+  `acquisition = [scraping]`. Los clientes HTTP planos (httpx, con cualquier User-Agent,
+  incluido uno simple y honesto) reciben 403 en el edge de Cloudflare desde IPs residenciales;
+  un Chromium real resuelve el reto JS una vez (cookie `cf_clearance`) y luego sirve el JSON
+  vía `fetch()` dentro de la página (`core/connectors/browser.py`). Requiere
+  `uv run playwright install chromium`. Headless por defecto; `REDDIT_BROWSER_HEADLESS=0` si
+  Cloudflare bloquea el headless. Salida de respaldo si se endurece: API oficial vía AsyncPRAW
+  (OAuth app-only), implementada en el historial git.
 - Medios RSS de v1 (para validar el conector `press_rss`): **El País + BBC News**. El
   conector no los hardcodea: cada medio es una `source_instance` (`feed_url` como param).
 
@@ -112,11 +114,13 @@ tendencia avanzados; multi-tenant.
 1. Scaffolding + `CLAUDE.md` + migraciones + `Item` + contrato de conector — **hecho**.
    Migraciones validadas contra un proyecto Supabase real (config/bronze/silver/gold +
    pgvector confirmados).
-2. Conectores Reddit y RSS — **hecho**. `core/connectors/reddit.py` (scraping no autenticado
-   de los `.json`: listing para los posts + `comments/{id}.json` para el top 10 de
-   comentarios como raw_items separados; UA descriptivo simple) y `core/connectors/rss.py`
+2. Conectores Reddit y RSS — **hecho**. `core/connectors/reddit.py` (scraping de los `.json`
+   vía navegador real Playwright para sortear Cloudflare: listing para los posts +
+   `comments/{id}.json` para el top 10 de comentarios como raw_items separados;
+   `core/connectors/browser.py` encapsula el page reutilizable) y `core/connectors/rss.py`
    (RSS para descubrir entradas + trafilatura sobre la página del artículo para el cuerpo
-   completo). Ambos probados offline con `httpx.MockTransport`.
+   completo). RSS probado offline con `httpx.MockTransport`; lógica de Reddit probada offline
+   stubbeando la capa de navegador.
 3. Ingesta Bronce — **hecho**. `core/storage/base.py` (interfaz `BronzeStore`) +
    `core/storage/supabase.py` (impl con psycopg async) + `core/ingestion/bronze.py`
    (`run_ingestion`: lee watermark → `connector.fetch(query=None, since=watermark)` →
