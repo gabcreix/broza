@@ -63,25 +63,25 @@ def browser_page(warmup_url: str, user_agent: str = DEFAULT_USER_AGENT):
         )
         page = context.new_page()
         try:
-            page.goto(warmup_url, wait_until="domcontentloaded", timeout=60_000)
+            # Warm up: let Cloudflare's challenge run and drop cf_clearance before we ask for
+            # data. "load" (not "domcontentloaded") so the post-challenge redirect settles.
+            page.goto(warmup_url, wait_until="load", timeout=60_000)
             yield page
         finally:
             browser.close()
 
 
 def fetch_json(page: Page, url: str, params: dict[str, Any] | None = None) -> Any:
-    """Fetch a JSON document from inside the page (so it inherits the cleared cookies)."""
+    """Navigate the page straight to a JSON endpoint and read the response body.
+
+    Reading the navigation's own response (rather than an in-page fetch) avoids the "execution
+    context destroyed" race when the site is still redirecting, and the navigation carries the
+    cf_clearance cookie set during warm-up.
+    """
     full_url = str(httpx.URL(url, params=params or {}))
-    result = page.evaluate(
-        """async (u) => {
-            const resp = await fetch(u, {
-                credentials: 'include',
-                headers: {'Accept': 'application/json'},
-            });
-            return {status: resp.status, body: await resp.text()};
-        }""",
-        full_url,
-    )
-    if result["status"] != 200:
-        raise RuntimeError(f"GET {full_url} returned HTTP {result['status']}")
-    return json.loads(result["body"])
+    response = page.goto(full_url, wait_until="domcontentloaded", timeout=60_000)
+    if response is None:
+        raise RuntimeError(f"GET {full_url} produced no response")
+    if response.status != 200:
+        raise RuntimeError(f"GET {full_url} returned HTTP {response.status}")
+    return json.loads(response.text())
