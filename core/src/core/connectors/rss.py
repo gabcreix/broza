@@ -16,11 +16,11 @@ from core.connectors.base import (
     ConnectorCapabilities,
     register_connector,
 )
+from core.connectors.http import browser_headers
 from core.models.config import QueryDefinition
 from core.models.raw import RawPayload
 
 CONNECTOR_VERSION = "1"
-USER_AGENT = "broza/0.1 (content aggregation research bot)"
 
 
 class RssParams(BaseModel):
@@ -49,7 +49,7 @@ class PressRssConnector(Connector):
         self, query: QueryDefinition | None, since: datetime | None
     ) -> AsyncIterator[RawPayload]:
         async with httpx.AsyncClient(
-            headers={"User-Agent": USER_AGENT}, timeout=30, follow_redirects=True
+            headers=browser_headers(), timeout=30, follow_redirects=True
         ) as client:
             feed_resp = await client.get(str(self.params.feed_url))
             feed_resp.raise_for_status()

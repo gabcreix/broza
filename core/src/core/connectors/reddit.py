@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
@@ -13,11 +14,11 @@ from core.connectors.base import (
     ConnectorCapabilities,
     register_connector,
 )
+from core.connectors.http import DEFAULT_USER_AGENT, browser_headers
 from core.models.config import QueryDefinition
 from core.models.raw import RawPayload
 
 CONNECTOR_VERSION = "1"
-USER_AGENT = "broza/0.1 (content aggregation research bot)"
 TOP_COMMENT_LIMIT = 10
 
 
@@ -48,7 +49,8 @@ class RedditConnector(Connector):
     async def fetch(
         self, query: QueryDefinition | None, since: datetime | None
     ) -> AsyncIterator[RawPayload]:
-        async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=30) as client:
+        user_agent = os.environ.get("REDDIT_USER_AGENT") or DEFAULT_USER_AGENT
+        async with httpx.AsyncClient(headers=browser_headers(user_agent), timeout=30) as client:
             listing_url, listing_params = self._listing_request(query)
             resp = await client.get(listing_url, params=listing_params)
             resp.raise_for_status()
